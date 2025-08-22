@@ -1,5 +1,5 @@
 import os, json, re
-from typing import Dict
+from typing import Dict, List, Union
 from PIL import Image
 import google.generativeai as genai
 
@@ -19,14 +19,14 @@ def _extract_json_block(text: str) -> dict:
         return json.loads(text)
     except Exception:
         pass
-    # Look for fenced code blocks first
+    # Look for fenced code blocks
     m = re.search(r"```(?:json)?\s*({[\s\S]*?})\s*```", text, re.IGNORECASE)
     if m:
         try:
             return json.loads(m.group(1))
         except Exception:
             pass
-    # Fallback: first {...} block (not perfect but practical)
+    # Fallback: first {...} block
     m2 = re.search(r"({[\s\S]*})", text)
     if m2:
         try:
@@ -36,37 +36,45 @@ def _extract_json_block(text: str) -> dict:
     raise ValueError("Could not parse JSON from model response.")
 
 def extract_answers_from_omr(image_path: str, num_questions: int) -> Dict[int, str]:
-    """Return {1:'A'|'B'|'C'|'D'|'NA', ...} for questions 1..num_questions."""
+    """
+    Return {1:'A'|'B'|'C'|'D'|'NA', ...} for questions 1..num_questions.
+    Handles multiple bubbles → NA.
+    """
     model = _get_model()
 
     prompt = f"""
     You are an OMR sheet bubble reader.
-    TASK: For each visible question, determine the selected option among [A, B, C, D].
+
+    TASK:
+    - For each visible question, detect which options [A, B, C, D] are filled.
+    - Always return answers as lists:
+      - If one bubble is filled → ["A"]
+      - If multiple bubbles are filled → ["A","C"]
+      - If none are filled → []
+
     RULES:
-    - Return ONLY JSON with this exact schema:
+    - Output only valid JSON, no extra commentary.
+    - Schema:
       {{
         "answers": {{
-          "1": "A|B|C|D|NA",
-          "2": "A|B|C|D|NA",
-          "...": "..."
-        }},
-        "schema": "A|B|C|D|NA"
+          "1": ["A"],
+          "2": ["B","C"],
+          "3": [],
+          ...
+        }}
       }}
-    - Use "NA" if a bubble is empty, multiple bubbles are filled for the same question.
-    - Do NOT infer answers for questions not visible in the image.
-    - Prefer precision over recall: if unsure, mark "NA".
-    - No extra commentary, no Markdown.
-    - If there are more than {num_questions} questions visible, include only the first {num_questions}.
+    - If more than {num_questions} questions visible, include only the first {num_questions}.
     """
 
     img = Image.open(image_path)
+
     # Ask the model
     response = model.generate_content([prompt, img])
-    # Some SDK versions use .text, others have parts; handle both.
+
+    # Extract text from response
     try:
         text = response.text
     except Exception:
-        # Try to reconstruct from parts
         parts = []
         for cand in getattr(response, 'candidates', []) or []:
             for p in getattr(cand.content, 'parts', []) or []:
@@ -76,15 +84,27 @@ def extract_answers_from_omr(image_path: str, num_questions: int) -> Dict[int, s
     if not text:
         raise RuntimeError("Empty response from Gemini.")
 
+    # Parse JSON
     data = _extract_json_block(text)
     answers = data.get("answers", {})
 
-    # Normalize to {int: 'A'|'B'|'C'|'D'|'NA'} and clamp to num_questions
-    normalized = {}
+    # 🔹 Normalize to {int: "A"|"B"|"C"|"D"|"NA"}
+    normalized: Dict[int, str] = {}
     for i in range(1, num_questions + 1):
-        raw = str(answers.get(str(i), answers.get(i, "NA"))).strip().upper()
-        if raw not in {"A", "B", "C", "D", "NA"}:
-            raw = "NA"
-        normalized[i] = raw
+        raw_val = answers.get(str(i), answers.get(i, []))
+
+        # Ensure it's a list
+        if isinstance(raw_val, str):
+            raw_list = [raw_val] if raw_val in {"A","B","C","D"} else []
+        elif isinstance(raw_val, list):
+            raw_list = [opt for opt in raw_val if opt in {"A","B","C","D"}]
+        else:
+            raw_list = []
+
+        # Apply rule: single → that option, 0 or >1 → "NA"
+        if len(raw_list) == 1:
+            normalized[i] = raw_list[0]
+        else:
+            normalized[i] = "NA"
 
     return normalized
