@@ -17,6 +17,18 @@
       <h3>Unanswered (NA)</h3>
       <p>{{ summary.na }}</p>
     </div>
+
+    <div class="stat">
+      <h3>Percentage</h3>
+      <p>{{ summary.percentage }}%</p>
+    </div>
+    
+    {% if summary.multi is defined %}
+    <div class="stat">
+      <h3>Multiple Choice</h3>
+      <p>{{ summary.multi }}</p>
+    </div>
+    {% endif %}
   </div>
 
   <div class="card" style="margin-top:16px;">

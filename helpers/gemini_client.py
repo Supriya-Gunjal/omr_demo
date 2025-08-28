@@ -1,110 +1,84 @@
-import os, json, re
-from typing import Dict, List, Union
+import os, json
+from typing import Dict
 from PIL import Image
 import google.generativeai as genai
 
-# Configure once per process
 def _get_model():
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("No API key. Set GOOGLE_API_KEY (preferred) or GEMINI_API_KEY in environment or .env")
+        raise RuntimeError("No API key. Set GOOGLE_API_KEY or GEMINI_API_KEY in environment or .env")
     genai.configure(api_key=api_key)
     model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
     return genai.GenerativeModel(model_name)
 
-def _extract_json_block(text: str) -> dict:
-    """Try to extract a JSON object from the model text response."""
-    # Direct attempt
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    # Look for fenced code blocks
-    m = re.search(r"```(?:json)?\s*({[\s\S]*?})\s*```", text, re.IGNORECASE)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except Exception:
-            pass
-    # Fallback: first {...} block
-    m2 = re.search(r"({[\s\S]*})", text)
-    if m2:
-        try:
-            return json.loads(m2.group(1))
-        except Exception:
-            pass
-    raise ValueError("Could not parse JSON from model response.")
-
 def extract_answers_from_omr(image_path: str, num_questions: int) -> Dict[int, str]:
     """
-    Return {1:'A'|'B'|'C'|'D'|'NA', ...} for questions 1..num_questions.
-    Handles multiple bubbles → NA.
+    Use Gemini to read bubbles from OMR sheet.
+    Handles >40 questions by batching.
+    Returns dict {1:'A'|'B'|'C'|'D'|'NA'|'HALF'}.
     """
+
     model = _get_model()
-
-    prompt = f"""
-    You are an OMR sheet bubble reader.
-
-    TASK:
-    - For each visible question, detect which options [A, B, C, D] are filled.
-    - Always return answers as lists:
-      - If one bubble is filled → ["A"]
-      - If multiple bubbles are filled → ["A","C"]
-      - If none are filled → []
-
-    RULES:
-    - Output only valid JSON, no extra commentary.
-    - Schema:
-      {{
-        "answers": {{
-          "1": ["A"],
-          "2": ["B","C"],
-          "3": [],
-          ...
-        }}
-      }}
-    - If more than {num_questions} questions visible, include only the first {num_questions}.
-    """
-
     img = Image.open(image_path)
 
-    # Ask the model
-    response = model.generate_content([prompt, img])
+    def process_batch(start: int, end: int) -> Dict[int, str]:
+        """Ask Gemini for a batch of questions."""
+        prompt = f"""
+You are an OMR bubble reader.
 
-    # Extract text from response
-    try:
-        text = response.text
-    except Exception:
-        parts = []
-        for cand in getattr(response, 'candidates', []) or []:
-            for p in getattr(cand.content, 'parts', []) or []:
-                if getattr(p, 'text', None):
-                    parts.append(p.text)
-        text = "\n".join(parts).strip()
-    if not text:
-        raise RuntimeError("Empty response from Gemini.")
+TASK:
+- Detect filled options for each question ({start}..{end}).
+- Options: A, B, C, D
+- If bubble is only HALF-FILLED or PARTIALLY filled → return "HALF".
+- If no option is clearly filled → [].
+- Always return valid JSON with schema:
+{{
+  "answers": {{
+    "{start}": ["A"],
+    "{start+1}": ["HALF"],
+    "{end}": []
+  }}
+}}
 
-    # Parse JSON
-    data = _extract_json_block(text)
-    answers = data.get("answers", {})
+RULES:
+- Do not add commentary or text outside JSON.
+- Always return exactly {end-start+1} entries.
+"""
+        response = model.generate_content(
+            [prompt, img],
+            generation_config={"response_mime_type": "application/json"}
+        )
+        try:
+            data = json.loads(response.text)
+            return data.get("answers", {})
+        except Exception as e:
+            raise RuntimeError(f"Could not parse Gemini response as JSON: {e}")
 
-    # 🔹 Normalize to {int: "A"|"B"|"C"|"D"|"NA"}
-    normalized: Dict[int, str] = {}
-    for i in range(1, num_questions + 1):
-        raw_val = answers.get(str(i), answers.get(i, []))
+    # ---- Run in batches of 40 ----
+    BATCH_SIZE = 40
+    answers: Dict[int, str] = {}
 
-        # Ensure it's a list
-        if isinstance(raw_val, str):
-            raw_list = [raw_val] if raw_val in {"A","B","C","D"} else []
-        elif isinstance(raw_val, list):
-            raw_list = [opt for opt in raw_val if opt in {"A","B","C","D"}]
-        else:
-            raw_list = []
+    for start in range(1, num_questions + 1, BATCH_SIZE):
+        end = min(start + BATCH_SIZE - 1, num_questions)
+        batch_ans = process_batch(start, end)
 
-        # Apply rule: single → that option, 0 or >1 → "NA"
-        if len(raw_list) == 1:
-            normalized[i] = raw_list[0]
-        else:
-            normalized[i] = "NA"
+        for i in range(start, end + 1):
+            raw_val = batch_ans.get(str(i), [])
 
-    return normalized
+            if isinstance(raw_val, str):
+                if raw_val == "HALF":
+                    answers[i] = "HALF"
+                else:
+                    answers[i] = raw_val if raw_val in {"A","B","C","D"} else "NA"
+
+            elif isinstance(raw_val, list):
+                if len(raw_val) == 1 and raw_val[0] == "HALF":
+                    answers[i] = "NA"
+                elif len(raw_val) == 1 and raw_val[0] in {"A","B","C","D"}:
+                    answers[i] = raw_val[0]
+                else:
+                    answers[i] = "NA"
+            else:
+                answers[i] = "NA"
+
+    return answers
