@@ -14,16 +14,6 @@ An OMR (Optical Mark Recognition) scanning model that scans student OMR answer s
 - ✅ Calculates and displays student score instantly.  
 - ✅ Flask-based web interface for easy use. 
 
-
----
-
-## ⚙️ Installation & Setup
-
-### 1. Clone the Repository
-```bash
-git clone https://github.com/your-username/omr-scanning.git
-cd omr-scanning
-
 ## 1) Setup
 
 python -m venv .venv
