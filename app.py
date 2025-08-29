@@ -47,17 +47,17 @@ def create_app():
             save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
             file.save(save_path)
 
-            # 1) Ask Gemini to read student's answers from OMR image
+
             try:
                 student_answers = extract_answers_from_omr(save_path, num_questions=num_questions)
             except Exception as e:
                 flash(("error", f"Gemini extraction failed: {e}"))
                 return redirect(url_for("index"))
 
-            # 2) Parse manual answer key
+
             key_answers = parse_answer_key(answer_key_text, num_questions=num_questions)
 
-            # 3) Score
+
             summary, breakdown = compute_score(student_answers, key_answers, num_questions)
 
             return render_template("result.html", summary=summary, breakdown=breakdown)

@@ -4,7 +4,7 @@ import os, json
 from PIL import Image
 import google.generativeai as genai
 
-VALID = {"A", "B", "C", "D", "NA"}
+VALID = {"A", "B", "C", "D", "NA", "HALF"}  
 
 def _norm_token(tok: str) -> str:
     t = tok.strip().upper()
@@ -17,7 +17,8 @@ def parse_answer_key(text: str, num_questions: int) -> Dict[int, str]:
     if not text.strip():
         return {i: "NA" for i in range(1, num_questions + 1)}
 
-    numbered_pairs = re.findall(r"(\d+)\s*[:=\-]\s*([A-D]|NA)", text, flags=re.IGNORECASE)
+
+    numbered_pairs = re.findall(r"(\d+)\s*[:=\-]\s*([A-D]|NA|HALF)", text, flags=re.IGNORECASE)
     if numbered_pairs:
         for q_str, opt in numbered_pairs:
             q = int(q_str)
@@ -25,14 +26,13 @@ def parse_answer_key(text: str, num_questions: int) -> Dict[int, str]:
                 key[q] = _norm_token(opt)
     else:
         raw = text.strip()
-        blob = re.fullmatch(r"[A-DNAa-dna\s,]+", raw)
-        if blob and (len(raw.replace(" ", "").replace(",", "")) == num_questions):
-            seq = [c for c in raw if c.upper() in {"A","B","C","D","N"}]
-            cleaned = []
-            for c in seq:
-                cleaned.append("NA" if c.upper() == "N" else c.upper())
+
+        blob = re.fullmatch(r"[A-DNAHALF\s,]+", raw, flags=re.IGNORECASE)
+        if blob and (len(raw.replace(" ", "").replace(",", "")) >= num_questions):
+            tokens = re.split(r"[\s,]+", raw)
             for i in range(1, num_questions + 1):
-                key[i] = _norm_token(cleaned[i-1])
+                if i <= len(tokens):
+                    key[i] = _norm_token(tokens[i-1])
         else:
             tokens = re.split(r"[\s,]+", raw)
             idx = 1
@@ -49,7 +49,6 @@ def parse_answer_key(text: str, num_questions: int) -> Dict[int, str]:
             key[i] = "NA"
     return key
 
-# -------------------- Scoring --------------------
 def compute_score(student: Dict[int, Union[str, List[str]]], key: Dict[int, str], num_questions: int):
     """
     student: {1: "A", 2: "HALF", 3: "NA"...}
@@ -72,7 +71,7 @@ def compute_score(student: Dict[int, Union[str, List[str]]], key: Dict[int, str]
         if s == "NA":
             na += 1
             result = "NA"
-        elif s == "HALF":   # <<-- NEW RULE
+        elif s == "HALF":   
             incorrect += 1
             result = "Incorrect (Half-filled)"
         elif s == k and s in {"A","B","C","D"}:
@@ -94,4 +93,3 @@ def compute_score(student: Dict[int, Union[str, List[str]]], key: Dict[int, str]
         "percentage": round(percentage, 2),
     }
     return summary, breakdown
-

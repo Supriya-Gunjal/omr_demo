@@ -3,6 +3,7 @@ from typing import Dict
 from PIL import Image
 import google.generativeai as genai
 
+
 def _get_model():
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -11,74 +12,86 @@ def _get_model():
     model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
     return genai.GenerativeModel(model_name)
 
+
 def extract_answers_from_omr(image_path: str, num_questions: int) -> Dict[int, str]:
     """
-    Use Gemini to read bubbles from OMR sheet.
-    Handles >40 questions by batching.
-    Returns dict {1:'A'|'B'|'C'|'D'|'NA'|'HALF'}.
+    Use Gemini to read bubbles (including half-filled) from OMR sheet.
+    Returns dict {1:'A'|'B'|'C'|'D'|'NA'}.
     """
 
     model = _get_model()
-    img = Image.open(image_path)
 
-    def process_batch(start: int, end: int) -> Dict[int, str]:
-        """Ask Gemini for a batch of questions."""
-        prompt = f"""
+
+    prompt = f"""
 You are an OMR bubble reader.
 
 TASK:
-- Detect filled options for each question ({start}..{end}).
+- Detect filled options for each question (1..{num_questions}).
 - Options: A, B, C, D
-- If bubble is only HALF-FILLED or PARTIALLY filled → return "HALF".
-- If no option is clearly filled → [].
-- Always return valid JSON with schema:
+- Handle cases:
+  * Fully filled bubble → return the option (e.g. "A")
+  * Multiple fully filled bubbles → return both (e.g. ["B","C"])
+  * Half-filled / partially darkened bubble → treat as "NA" (not valid)
+  * No filled bubble → return []
+
+OUTPUT FORMAT (strict JSON only):
 {{
   "answers": {{
-    "{start}": ["A"],
-    "{start+1}": ["HALF"],
-    "{end}": []
+    "1": ["A"],        # if only A is filled
+    "2": ["B","D"],    # if multiple marked
+    "3": [],           # if no option marked
+    "4": ["half-A"],   # if half-filled (special marker)
+    ...
   }}
 }}
 
 RULES:
+- For half-filled bubbles, always mark as ["half-X"] where X ∈ {{"A","B","C","D"}}
+- Always return exactly {num_questions} entries.
 - Do not add commentary or text outside JSON.
-- Always return exactly {end-start+1} entries.
 """
-        response = model.generate_content(
-            [prompt, img],
-            generation_config={"response_mime_type": "application/json"}
-        )
-        try:
-            data = json.loads(response.text)
-            return data.get("answers", {})
-        except Exception as e:
-            raise RuntimeError(f"Could not parse Gemini response as JSON: {e}")
 
-    # ---- Run in batches of 40 ----
-    BATCH_SIZE = 40
-    answers: Dict[int, str] = {}
+    img = Image.open(image_path)
 
-    for start in range(1, num_questions + 1, BATCH_SIZE):
-        end = min(start + BATCH_SIZE - 1, num_questions)
-        batch_ans = process_batch(start, end)
+    response = model.generate_content(
+        [prompt, img],
+        generation_config={"response_mime_type": "application/json"}
+    )
 
-        for i in range(start, end + 1):
-            raw_val = batch_ans.get(str(i), [])
+    try:
+        data = json.loads(response.text)
+    except Exception as e:
+        raise RuntimeError(f"Could not parse Gemini response as JSON: {e}")
 
-            if isinstance(raw_val, str):
-                if raw_val == "HALF":
-                    answers[i] = "HALF"
-                else:
-                    answers[i] = raw_val if raw_val in {"A","B","C","D"} else "NA"
+    answers = data.get("answers", {})
 
-            elif isinstance(raw_val, list):
-                if len(raw_val) == 1 and raw_val[0] == "HALF":
-                    answers[i] = "NA"
-                elif len(raw_val) == 1 and raw_val[0] in {"A","B","C","D"}:
-                    answers[i] = raw_val[0]
-                else:
-                    answers[i] = "NA"
-            else:
-                answers[i] = "NA"
 
-    return answers
+    normalized: Dict[int, str] = {}
+    for i in range(1, num_questions + 1):
+        raw_val = answers.get(str(i), answers.get(i, []))
+
+
+        if isinstance(raw_val, str):
+            raw_list = [raw_val]
+        elif isinstance(raw_val, list):
+            raw_list = raw_val
+        else:
+            raw_list = []
+
+
+        clean_list = []
+        has_half = False
+        for opt in raw_list:
+            if opt in {"A", "B", "C", "D"}:
+                clean_list.append(opt)
+            elif isinstance(opt, str) and opt.startswith("half-"):
+                has_half = True
+
+
+        if len(clean_list) == 1 and not has_half:
+            normalized[i] = clean_list[0]
+        else:
+
+            normalized[i] = "NA"
+
+    return normalized
