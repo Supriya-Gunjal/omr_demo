@@ -1,7 +1,28 @@
 # OMR Scoring (Flask + Gemini)
 
-Upload a student's filled OMR sheet image, paste your answer key, and get the student's score.
-Uses Google's Gemini multimodal model to detect filled bubbles (A/B/C/D).
+An OMR (Optical Mark Recognition) scanning model that scans student OMR answer sheets, extracts filled bubbles using Google Gemini Multimodal AI, and evaluates scores against a given answer key.  
+
+
+## 📌 Features
+
+- ✅ Upload scanned OMR sheet (image format: JPG/PNG).  
+- ✅ Detects marked bubbles (A/B/C/D) using Gemini Vision Model.  
+- ✅ Handles skewed or partially filled OMR sheets.  
+- ✅ Detects double-marked bubbles → marked as `NA`.
+- ✅ Detects Empty bubble → marked as `NA`.
+- ✅ Detects Half-marked bubble → marked as `NA`.
+- ✅ Calculates and displays student score instantly.  
+- ✅ Flask-based web interface for easy use. 
+
+
+---
+
+## ⚙️ Installation & Setup
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/your-username/omr-scanning.git
+cd omr-scanning
 
 ## 1) Setup
 
@@ -11,8 +32,6 @@ python -m venv .venv
 
 
 pip install -r requirements.txt
-cp .env.example .env
-
 
 ### Environment variable (Windows PowerShell)
 ```powershell
@@ -24,7 +43,7 @@ setx GOOGLE_API_KEY "YOUR_KEY_HERE"
 
 ```bash
 flask --app app run --debug
-# or
+# or terminal
 python app.py
 ```
 
@@ -32,7 +51,7 @@ Then open http://127.0.0.1:5000
 
 ## 3) How to enter the answer key
 
-- **One option per line** (simplest):
+- **One option per line** :
   ```
   A
   B
@@ -60,3 +79,16 @@ Rules:
 - Valid options: A, B, C, D, NA (case-insensitive).
 - If fewer answers than `Number of questions`, missing ones become `NA`.
 
+
+
+## 📊 Output Preview
+
+When a student’s OMR sheet is uploaded and evaluated, the system generates:
+
+- Total Questions
+- Correct Answers
+- Incorrect Answers
+- Unanswered (NA)
+- Percentage Score
+
+It also provides a per-question breakdown (Answer Key vs Student Answer)
