@@ -2,70 +2,59 @@ import os
 from flask import Flask, render_template, request, redirect, url_for, flash
 from werkzeug.utils import secure_filename
 
+# ✅ Corrected import (because gemini_client.py is inside helpers/)
 from helpers.gemini_client import extract_answers_from_omr
-from utils.omr_scoring import parse_answer_key, compute_score
+from utils.omr_scoring import compute_score
 
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-def allowed_file(filename: str) -> bool:
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+app = Flask(__name__)
+app.secret_key = "supersecret"  # change in production
 
-def create_app():
-    app = Flask(__name__)
-    app.config["UPLOAD_FOLDER"] = os.path.join(os.path.dirname(__file__), "uploads")
-    os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
-    app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
-    @app.route("/", methods=["GET", "POST"])
-    def index():
-        if request.method == "POST":
-            if "omr_image" not in request.files:
-                flash(("error", "No image part in the request."))
-                return redirect(url_for("index"))
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        # Check if files are uploaded
+        if "answer_key_omr" not in request.files or "omr_image" not in request.files:
+            flash("Both OMR sheets are required", "error")
+            return redirect(url_for("index"))
 
-            file = request.files["omr_image"]
-            if file.filename == "":
-                flash(("error", "No selected file."))
-                return redirect(url_for("index"))
+        key_file = request.files["answer_key_omr"]
+        student_file = request.files["omr_image"]
+        num_questions = int(request.form["num_questions"])
 
-            if not allowed_file(file.filename):
-                flash(("error", "Invalid file type. Please upload PNG/JPG/WebP."))
-                return redirect(url_for("index"))
+        if key_file.filename == "" or student_file.filename == "":
+            flash("No file selected", "error")
+            return redirect(url_for("index"))
 
-            try:
-                num_questions = int(request.form.get("num_questions", "100"))
-                if num_questions < 1 or num_questions > 300:
-                    raise ValueError
-            except ValueError:
-                flash(("error", "Invalid number of questions."))
-                return redirect(url_for("index"))
+        # Save files in upload folder
+        key_path = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(key_file.filename))
+        student_path = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(student_file.filename))
 
-            answer_key_text = request.form.get("answer_key", "").strip()
+        key_file.save(key_path)
+        student_file.save(student_path)
 
-            filename = secure_filename(file.filename)
-            save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-            file.save(save_path)
+        try:
+            # Extract answers using Gemini
+            key_answers = extract_answers_from_omr(key_path, num_questions)
+            student_answers = extract_answers_from_omr(student_path, num_questions)
 
-            # 1) Ask Gemini to read student's answers from OMR image
-            try:
-                student_answers = extract_answers_from_omr(save_path, num_questions=num_questions)
-            except Exception as e:
-                flash(("error", f"Gemini extraction failed: {e}"))
-                return redirect(url_for("index"))
-
-            # 2) Parse manual answer key
-            key_answers = parse_answer_key(answer_key_text, num_questions=num_questions)
-
-            # 3) Score
+            # Compute results
             summary, breakdown = compute_score(student_answers, key_answers, num_questions)
 
+            # ✅ Correct template name (you only have result.html, not results.html)
             return render_template("result.html", summary=summary, breakdown=breakdown)
 
-        return render_template("index.html")
+        except Exception as e:
+            flash(f"Error processing OMR: {str(e)}", "error")
+            return redirect(url_for("index"))
 
-    return app
+    return render_template("index.html")
+
 
 if __name__ == "__main__":
-    app = create_app()
     app.run(debug=True)

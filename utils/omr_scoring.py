@@ -61,12 +61,13 @@ def parse_answer_key(text: str, num_questions: int) -> Dict[int, str]:
 
 from typing import Dict, List, Union
 
-def compute_score(student: Dict[int, Union[str, List[str]]], key: Dict[int, str], num_questions: int):
-    """
-    student: {1: "A", 2: ["B","C"], 3: [] ...}
-    key:     {1: "A", 2: "C", 3: "B" ...}
-    """
+from typing import Dict, List, Union
 
+def compute_score(student: Dict[int, str], key: Dict[int, str], num_questions: int):
+    """
+    student: {1: "A", 2: "B", 3: "NA", ...}
+    key:     {1: "A", 2: "C", 3: "B", ...}
+    """
     correct = incorrect = na = 0
     breakdown: List[dict] = []
 
@@ -74,18 +75,10 @@ def compute_score(student: Dict[int, Union[str, List[str]]], key: Dict[int, str]
         s = student.get(i, "NA")
         k = key.get(i, "NA")
 
-        # 🔹 Normalize multiple/no answers
-        if isinstance(s, list):
-            if len(s) == 1 and s[0] in {"A","B","C","D"}:
-                s = s[0]
-            else:
-                s = "NA"
-
-        # 🔹 Apply scoring rules
         if s == "NA":
             na += 1
             result = "NA"
-        elif s == k and s in {"A","B","C","D"}:
+        elif s == k:
             correct += 1
             result = "Correct"
         else:
@@ -99,5 +92,6 @@ def compute_score(student: Dict[int, Union[str, List[str]]], key: Dict[int, str]
         "correct": correct,
         "incorrect": incorrect,
         "na": na,
+        "score_percent": round((correct / num_questions) * 100, 2)
     }
     return summary, breakdown
